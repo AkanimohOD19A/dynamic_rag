@@ -20,9 +20,7 @@ import queue
 import logging
 import io
 import base64
-import requests
-import os
-from urllib.parse import quote
+import cohere
 
 # Document processing imports
 try:
@@ -325,263 +323,6 @@ class FileProcessor:
             raise Exception(f"Error processing file '{uploaded_file.name}': {str(e)}")
 
 
-class LLMProvider:
-    """Handles LLM API calls for response generation"""
-
-    def __init__(self, provider: str = "openai"):
-        self.provider = provider.lower()
-        self.api_key = None
-        self.base_url = None
-
-        # Initialize based on provider
-        if self.provider == "openai":
-            self.api_key = os.getenv("OPENAI_API_KEY")
-            self.base_url = "https://api.openai.com/v1/chat/completions"
-            self.model = "gpt-3.5-turbo"
-        elif self.provider == "anthropic":
-            self.api_key = os.getenv("ANTHROPIC_API_KEY")
-            self.base_url = "https://api.anthropic.com/v1/messages"
-            self.model = "claude-3-haiku-20240307"
-        elif self.provider == "local":
-            # For local models like Ollama
-            self.base_url = "http://localhost:11434/api/generate"
-            self.model = "llama2"
-        elif self.provider == "mock":
-            # Mock provider for testing
-            self.model = "mock-llm"
-        elif self.provider == "cohere":
-            self.model = "command-r-plus"
-            self.base_url = "https://api.cohere.ai/v1/chat"
-
-    def set_api_key(self, key: str):
-        self.api_key = key
-
-    def generate_response(self, query: str, context_chunks: List[Dict[str, Any]],
-                          max_tokens: int = 1000) -> Dict[str, Any]:
-        """Generate response using LLM with retrieved context"""
-
-        if self.provider == "mock":
-            return self._mock_response(query, context_chunks)
-
-        # Prepare context
-        context_text = self._prepare_context(context_chunks)
-
-        # Create prompt
-        prompt = self._create_rag_prompt(query, context_text)
-
-        try:
-            if self.provider == "openai":
-                return self._call_openai(prompt, max_tokens)
-            elif self.provider == "anthropic":
-                return self._call_anthropic(prompt, max_tokens)
-            elif self.provider == "local":
-                return self._call_local(prompt, max_tokens)
-            elif self.provider == "cohere":
-                return self._call_cohere(prompt, max_tokens)
-            else:
-                return {"error": f"Unsupported provider: {self.provider}"}
-
-        except Exception as e:
-            return {"error": f"LLM API error: {str(e)}"}
-
-    def _prepare_context(self, chunks: List[Dict[str, Any]]) -> str:
-        """Prepare context from retrieved chunks"""
-        context_parts = []
-        for i, chunk in enumerate(chunks, 1):
-            context_parts.append(f"[Context {i}]\n{chunk['content']}\n")
-        return "\n".join(context_parts)
-
-    def _create_rag_prompt(self, query: str, context: str) -> str:
-        """Create RAG prompt template"""
-        return f"""You are a helpful AI assistant that answers questions based on the provided context. 
-
-CONTEXT:
-{context}
-
-INSTRUCTIONS:
-- Answer the user's question using ONLY the information provided in the context above
-- If the context doesn't contain enough information to answer the question, say so clearly
-- Cite which context sections you used (e.g., "According to Context 1...")
-- Be concise but comprehensive
-- If there are conflicting information in different contexts, mention this
-
-QUESTION: {query}
-
-ANSWER:"""
-
-    def _call_openai(self, prompt: str, max_tokens: int) -> Dict[str, Any]:
-        """Call OpenAI API"""
-        if not self.api_key:
-            return {"error": "OpenAI API key not found. Set OPENAI_API_KEY environment variable."}
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
-        data = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0.1
-        }
-
-        response = requests.post(self.base_url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
-
-        result = response.json()
-        return {
-            "response": result["choices"][0]["message"]["content"],
-            "model": self.model,
-            "tokens_used": result.get("usage", {}).get("total_tokens", 0)
-        }
-
-    def _call_anthropic(self, prompt: str, max_tokens: int) -> Dict[str, Any]:
-        """Call Anthropic API"""
-        if not self.api_key:
-            return {"error": "Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable."}
-
-        headers = {
-            "x-api-key": self.api_key,
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01"
-        }
-
-        data = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-
-        response = requests.post(self.base_url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
-
-        result = response.json()
-        return {
-            "response": result["content"][0]["text"],
-            "model": self.model,
-            "tokens_used": result.get("usage", {}).get("input_tokens", 0) + result.get("usage", {}).get("output_tokens",
-                                                                                                        0)
-        }
-
-    def _call_local(self, prompt: str, max_tokens: int) -> Dict[str, Any]:
-        """Call local model (e.g., Ollama)"""
-        data = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": 0.1
-            }
-        }
-
-        response = requests.post(self.base_url, json=data, timeout=60)
-        response.raise_for_status()
-
-        result = response.json()
-        return {
-            "response": result.get("response", ""),
-            "model": self.model,
-            "tokens_used": 0  # Local models don't always report token usage
-        }
-
-    def _call_cohere(self, prompt: str, max_tokens: int) -> Dict[str, Any]:
-        if not self.api_key:
-            return {"error": "Cohere API key not set. Please enter it in the sidebar."}
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
-        data = {
-            "model": self.model,
-            "chat_history": [],
-            "message": prompt,
-            "temperature": 0.3,
-            "max_tokens": max_tokens,
-        }
-
-        response = requests.post(self.base_url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        return {
-            "response": result.get("text", ""),
-            "model": self.model,
-            "tokens_used": result.get("meta", {}).get("tokens", {}).get("input_tokens", 0) +
-                           result.get("meta", {}).get("tokens", {}).get("output_tokens", 0)
-        }
-
-
-    def _mock_response(self, query: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate mock response for testing"""
-        if not context_chunks:
-            response = f"I don't have enough information in my knowledge base to answer your question about '{query}'. Please try adding relevant documents first."
-        else:
-            chunk_count = len(context_chunks)
-            response = f"""Based on the {chunk_count} relevant document{'s' if chunk_count > 1 else ''} I found, here's what I can tell you about '{query}':
-
-{context_chunks[0]['content'][:200]}...
-
-According to Context 1, this information directly addresses your question. The retrieved content shows {context_chunks[0]['score']:.3f} similarity to your query.
-
-*Note: This is a mock response. To get real AI-generated answers, configure an LLM provider (OpenAI, Anthropic, or local model) in the system settings.*"""
-
-        return {
-            "response": response,
-            "model": "mock-llm",
-            "tokens_used": len(response.split())
-        }
-
-    """Handles text chunking and embedding generation"""
-
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        self.embedding_model = SentenceTransformer(model_name)
-        self.chunk_size = 500
-        self.chunk_overlap = 50
-
-    def chunk_text(self, text: str, document_id: str) -> List[DocumentChunk]:
-        # Simple sentence-aware chunking
-        sentences = text.split('. ')
-        chunks = []
-        current_chunk = ""
-        chunk_index = 0
-
-        for sentence in sentences:
-            if len(current_chunk) + len(sentence) > self.chunk_size and current_chunk:
-                chunk_id = f"{document_id}_chunk_{chunk_index}"
-                chunks.append(DocumentChunk(
-                    id=chunk_id,
-                    document_id=document_id,
-                    content=current_chunk.strip(),
-                    chunk_index=chunk_index
-                ))
-
-                # Handle overlap
-                words = current_chunk.split()
-                overlap_words = words[-self.chunk_overlap:] if len(words) > self.chunk_overlap else words
-                current_chunk = ' '.join(overlap_words) + ' ' + sentence
-                chunk_index += 1
-            else:
-                current_chunk += sentence + '. '
-
-        # Add final chunk
-        if current_chunk.strip():
-            chunk_id = f"{document_id}_chunk_{chunk_index}"
-            chunks.append(DocumentChunk(
-                id=chunk_id,
-                document_id=document_id,
-                content=current_chunk.strip(),
-                chunk_index=chunk_index
-            ))
-
-        return chunks
-
-    def generate_embeddings(self, texts: List[str]) -> np.ndarray:
-        return self.embedding_model.encode(texts, convert_to_numpy=True)
-
-
 class TextProcessor:
     """Handles text chunking and embedding generation"""
 
@@ -689,13 +430,16 @@ class BackgroundIndexer:
 class RAGSystem:
     """Main RAG system orchestrator"""
 
-    def __init__(self, llm_provider: str = "mock"):
+    def __init__(self, cohere_api_key: str = None):
         self.doc_db = DocumentDatabase()
         self.vector_store = VectorStore()
         self.text_processor = TextProcessor()
-        self.llm = LLMProvider(llm_provider)
         self.indexer = BackgroundIndexer(self.doc_db, self.vector_store, self.text_processor)
         self.indexer.start()
+
+        # Initialize Cohere client
+        self.cohere_client = cohere.Client(cohere_api_key) if cohere_api_key else None
+        self.cohere_model = "command-r"  # or "command-r-plus" for more advanced capabilities
 
     def add_document(self, title: str, content: str, metadata: Dict[str, Any] = None) -> str:
         document_id = str(uuid.uuid4())
@@ -716,75 +460,112 @@ class RAGSystem:
         return document_id
 
     def search_documents(self, query: str, max_chunks: int = 5,
-                         max_tokens: int = 16000) -> List[Dict[str, Any]]:
+                        max_tokens: int = 16000, generate_response: bool = True) -> Dict[str, Any]:
+        """
+        Enhanced search with Cohere response generation
+
+        Returns:
+            Dict with keys:
+            - 'chunks': List of retrieved chunks
+            - 'response': Generated answer (if generate_response=True)
+            - 'sources': List of source documents
+        """
         # Generate query embedding
         query_embedding = self.text_processor.generate_embeddings([query])
 
         # Search vector store
         results = self.vector_store.search(query_embedding[0], k=max_chunks * 2)
 
-        # Apply MMR for diversity (simplified)
+        # Apply MMR for diversity
         selected_results = self._apply_mmr(results, query_embedding[0], max_chunks)
 
         # Retrieve chunk contents and apply token budget
         retrieved_chunks = []
         total_tokens = 0
+        source_docs = set()
 
         for chunk_id, score in selected_results:
-            # Get chunk from database (simplified - would need chunk retrieval method)
-            chunk_content = f"Chunk {chunk_id} content"  # Placeholder
+            # Get actual chunk content from database
+            chunk_content = self._get_chunk_content(chunk_id)
+            if not chunk_content:
+                continue
+
+            # Get document info for citation
+            doc_id = chunk_id.split('_chunk_')[0]
+            document = self.doc_db.get_document(doc_id)
+            source_info = {
+                'document_id': doc_id,
+                'document_title': document.title if document else "Unknown",
+                'chunk_id': chunk_id,
+                'score': score
+            }
 
             # Estimate tokens (rough approximation: 1 token ≈ 4 characters)
             chunk_tokens = len(chunk_content) // 4
 
             if total_tokens + chunk_tokens <= max_tokens:
                 retrieved_chunks.append({
-                    'chunk_id': chunk_id,
                     'content': chunk_content,
-                    'score': score,
-                    'tokens': chunk_tokens
+                    'metadata': source_info
                 })
+                source_docs.add((doc_id, document.title if document else "Unknown"))
                 total_tokens += chunk_tokens
             else:
                 break
 
-        return retrieved_chunks
-
-    def ask_question(self, query: str, max_chunks: int = 5,
-                     max_context_tokens: int = 8000, max_response_tokens: int = 1000) -> Dict[str, Any]:
-        """Complete RAG pipeline: retrieve + generate response"""
-
-        # Step 1: Retrieve relevant chunks
-        retrieved_chunks = self.search_documents(query, max_chunks, max_context_tokens)
-
-        if not retrieved_chunks:
-            return {
-                "response": "I don't have any relevant information in my knowledge base to answer your question. Please try adding some documents first.",
-                "chunks": [],
-                "metadata": {
-                    "chunks_found": 0,
-                    "total_tokens": 0,
-                    "model": self.llm.model,
-                    "query": query
-                }
-            }
-
-        # Step 2: Generate response using LLM
-        llm_result = self.llm.generate_response(query, retrieved_chunks, max_response_tokens)
-
-        # Step 3: Prepare complete response
-        return {
-            "response": llm_result.get("response", "Error generating response"),
-            "chunks": retrieved_chunks,
-            "metadata": {
-                "chunks_found": len(retrieved_chunks),
-                "total_context_tokens": sum(chunk['tokens'] for chunk in retrieved_chunks),
-                "llm_tokens_used": llm_result.get("tokens_used", 0),
-                "model": llm_result.get("model", self.llm.model),
-                "query": query,
-                "error": llm_result.get("error")
-            }
+        # Prepare response
+        result = {
+            'chunks': retrieved_chunks,
+            'sources': [{'id': doc_id, 'title': title} for doc_id, title in source_docs]
         }
+
+        # Generate response using Cohere if enabled
+        if generate_response and self.cohere_client and retrieved_chunks:
+            try:
+                # Prepare context documents for Cohere
+                context_docs = [
+                    {"text": chunk['content']} for chunk in retrieved_chunks
+                ]
+
+                # Generate response using Cohere's RAG capabilities
+                response = self.cohere_client.chat(
+                    model=self.cohere_model,
+                    message=query,
+                    documents=context_docs,
+                    temperature=0.3
+                )
+
+                result['response'] = {
+                    'text': response.text,
+                    'citations': getattr(response, 'citations', []),
+                    'generation_id': getattr(response, 'generation_id', None)
+                }
+
+            except Exception as e:
+                logger.error(f"Error generating response with Cohere: {e}")
+                # Fallback to simple concatenation
+                result['response'] = {
+                    'text': "Here's what I found:\n\n" + "\n\n".join(
+                        f"From {chunk['metadata']['document_title']}:\n{chunk['content']}"
+                        for chunk in retrieved_chunks
+                    ),
+                    'citations': [],
+                    'error': str(e)
+                }
+
+        return result
+
+    def _get_chunk_content(self, chunk_id: str) -> Optional[str]:
+        """Helper method to retrieve chunk content from database"""
+        # You'll need to implement this method to fetch actual chunk content
+        # This is a placeholder implementation
+        conn = sqlite3.connect(self.doc_db.db_path)
+        cursor = conn.execute(
+            "SELECT content FROM document_chunks WHERE id = ?", (chunk_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
 
     def _apply_mmr(self, results: List[tuple], query_embedding: np.ndarray,
                    max_results: int, lambda_param: float = 0.7) -> List[tuple]:
@@ -827,7 +608,7 @@ class RAGSystem:
             'recent_documents': [doc.title for doc in documents[:5]]
         }
 
-xxxxxx
+
 # Streamlit UI
 def main():
     st.set_page_config(
@@ -837,42 +618,16 @@ def main():
     )
 
     st.title("🔍 Dynamic RAG System POC")
-    st.markdown("A scalable document retrieval system with AI-powered responses")
+    st.markdown("A scalable document retrieval system with external knowledge base")
 
-    # LLM Provider Configuration
-    with st.sidebar:
-        st.header("🤖 LLM Configuration")
-
-        llm_provider = st.selectbox(
-            "Choose LLM Provider:",
-            ["mock", "openai", "anthropic", "local", "cohere"],
-            help="Select your preferred language model provider"
-        )
-
-        if llm_provider == "openai":
-            st.info("💡 Set OPENAI_API_KEY environment variable")
-        elif llm_provider == "anthropic":
-            st.info("💡 Set ANTHROPIC_API_KEY environment variable")
-        elif llm_provider == "local":
-            st.info("💡 Requires Ollama or similar local server")
-        elif llm_provider == "mock":
-            st.info("🎭 Using mock responses for demo")
-        elif llm_provider == "cohere":
-            cohere_key = st.text_input("Cohere API Key", type="password")
-            if cohere_key:
-                st.session_state["cohere_api_key"] = cohere_key
-
-    # Initialize system with selected provider
-    if 'rag_system' not in st.session_state or st.session_state.get('llm_provider') != llm_provider:
+    # Initialize system
+    if 'rag_system' not in st.session_state:
         with st.spinner("Initializing RAG system..."):
-            st.session_state.rag_system = RAGSystem(llm_provider)
-            st.session_state.llm_provider = llm_provider
+            st.session_state.rag_system = RAGSystem(cohere_api_key="LAb5hJRB31mFxk5cKLKCYxOqlhOqrIW0xcX3sgJF")
 
     rag_system = st.session_state.rag_system
-    if llm_provider == "cohere" and "cohere_api_key" in st.session_state:
-        rag_system.llm.set_api_key(st.session_state["cohere_api_key"])
 
-    # System stats in sidebar
+    # Sidebar for system stats
     with st.sidebar:
         st.header("📊 System Stats")
         stats = rag_system.get_system_stats()
@@ -891,61 +646,62 @@ def main():
                 st.text(f"• {doc}")
 
     # Main interface
-    tab1, tab2, tab3 = st.tabs(["🤖 Ask Questions", "📄 Add Document", "⚙️ System"])
+    tab1, tab2, tab3 = st.tabs(["🔍 Search", "📄 Add Document", "⚙️ System"])
 
     with tab1:
-        st.header("Ask Questions About Your Documents")
+        st.header("Search Documents")
 
-        query = st.text_input("Enter your question:",
+        query = st.text_input("Enter your search query:",
                               placeholder="What would you like to know?")
 
         col1, col2, col3 = st.columns(3)
         with col1:
             max_chunks = st.slider("Max chunks to retrieve", 1, 10, 5)
         with col2:
-            max_context_tokens = st.slider("Context token budget", 1000, 16000, 8000, step=1000)
+            max_tokens = st.slider("Token budget", 1000, 32000, 16000, step=1000)
         with col3:
-            max_response_tokens = st.slider("Response token limit", 100, 2000, 1000, step=100)
+            generate_response = st.checkbox("Generate response", value=True)
 
-        ask_btn = st.button("🤖 Ask Question", type="primary")
+        search_btn = st.button("🔍 Search", type="primary")
 
-        if ask_btn and query:
+        if search_btn and query:
             with st.spinner("Searching documents and generating response..."):
-                result = rag_system.ask_question(
-                    query, max_chunks, max_context_tokens, max_response_tokens
+                results = rag_system.search_documents(
+                    query,
+                    max_chunks,
+                    max_tokens,
+                    generate_response=generate_response
                 )
 
-            # Display main response
-            st.subheader("🎯 Answer")
+            if results.get('chunks'):
+                st.success(f"Found {len(results['chunks'])} relevant chunks")
 
-            if result['metadata'].get('error'):
-                st.error(f"❌ {result['metadata']['error']}")
+                if generate_response and 'response' in results:
+                    st.subheader("Generated Answer")
+                    st.markdown(results['response']['text'])
+
+                    if results['response'].get('citations'):
+                        st.caption("Citations:")
+                        for citation in results['response']['citations']:
+                            st.json(citation)
+
+                st.subheader("Retrieved Context")
+                total_tokens = sum(len(chunk['content']) // 4 for chunk in results['chunks'])
+                st.info(f"Total tokens used: {total_tokens:,} / {max_tokens:,}")
+
+                for i, chunk in enumerate(results['chunks'], 1):
+                    with st.expander(f"Chunk {i} (From: {chunk['metadata']['document_title']})"):
+                        st.markdown(chunk['content'])
+                        st.caption(f"Document ID: {chunk['metadata']['document_id']} | "
+                                 f"Chunk ID: {chunk['metadata']['chunk_id']} | "
+                                 f"Score: {chunk['metadata']['score']:.3f}")
+
+                if results.get('sources'):
+                    st.subheader("Source Documents")
+                    for source in results['sources']:
+                        st.text(f"• {source['title']} (ID: {source['id']})")
             else:
-                st.markdown(result['response'])
-
-            # Display metadata
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Chunks Used", result['metadata']['chunks_found'])
-            with col2:
-                st.metric("Context Tokens", result['metadata']['total_context_tokens'])
-            with col3:
-                st.metric("Response Tokens", result['metadata']['llm_tokens_used'])
-            with col4:
-                st.metric("Model", result['metadata']['model'])
-
-            # Show source chunks
-            if result['chunks']:
-                st.subheader("📚 Source Information")
-
-                for i, chunk in enumerate(result['chunks'], 1):
-                    with st.expander(f"Source {i} (Relevance: {chunk['score']:.3f})"):
-                        st.text(chunk['content'])
-                        st.caption(f"Chunk ID: {chunk['chunk_id']} | Tokens: {chunk['tokens']}")
-
-            # Show raw search option
-            with st.expander("🔍 View Raw Search Results"):
-                st.json(result)
+                st.warning("No relevant documents found.")
 
     with tab2:
         st.header("Add New Document")
