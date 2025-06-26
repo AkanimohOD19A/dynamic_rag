@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/../GenAi_Bi/.idea/GenAi_Bi.iml" filepath="$PROJECT_DIR$/../GenAi_Bi/.idea/GenAi_Bi.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/POC_DynamicRAG.iml" filepath="$PROJECT_DIR$/.idea/POC_DynamicRAG.iml" />
     </modules>
   </component>
