@@ -827,7 +827,7 @@ class RAGSystem:
             'recent_documents': [doc.title for doc in documents[:5]]
         }
 
-xxxxxx
+
 # Streamlit UI
 def main():
     st.set_page_config(
